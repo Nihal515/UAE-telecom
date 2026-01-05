@@ -37,9 +37,9 @@ st.markdown("""
 
 @st.cache_data
 def load_data():
-    """Load and merge all CSV files"""
+    """Load and merge all CSV files - USES ACTUAL COLUMN NAMES"""
     try:
-        # Load CSV files (users should place them in same directory)
+        # Load CSV files with correct column names
         subscribers = pd.read_csv('SUBSCRIBERS.csv')
         bills = pd.read_csv('BILLS.csv')
         tickets = pd.read_csv('TICKETS.csv')
@@ -72,14 +72,14 @@ def flag_anomalies(series):
     return series > upper_bound
 
 def calculate_executive_kpis(subscribers, bills, tickets):
-    """Calculate all Executive KPIs"""
+    """Calculate all Executive KPIs - FIXED FOR YOUR ACTUAL COLUMNS"""
     kpis = {}
     
     # KPI 1: Total Revenue
     kpis['total_revenue'] = bills['bill_amount'].sum()
     
     # KPI 2: ARPU
-    active_subs = len(subscribers[subscribers['subscriber_status'] == 'Active'])
+    active_subs = len(subscribers[subscribers['status'] == 'Active'])
     kpis['arpu'] = kpis['total_revenue'] / active_subs if active_subs > 0 else 0
     
     # KPI 3: Prepaid vs Postpaid Mix
@@ -90,7 +90,7 @@ def calculate_executive_kpis(subscribers, bills, tickets):
     kpis['postpaid_pct'] = 100 - kpis['prepaid_pct']
     
     # KPI 4: Retention Ratio
-    active_count = len(subscribers[subscribers['subscriber_status'] == 'Active'])
+    active_count = len(subscribers[subscribers['status'] == 'Active'])
     total_count = len(subscribers)
     kpis['retention_ratio'] = (active_count / total_count * 100) if total_count > 0 else 0
     
@@ -103,24 +103,34 @@ def calculate_executive_kpis(subscribers, bills, tickets):
     return kpis
 
 def calculate_manager_kpis(tickets):
-    """Calculate all Manager/Operations KPIs"""
+    """Calculate all Manager/Operations KPIs - FIXED FOR YOUR ACTUAL COLUMNS"""
     kpis = {}
     
     # KPI 8: Ticket Volume
     kpis['total_tickets'] = len(tickets)
     
     # KPI 9: SLA Compliance Rate
-    resolved_tickets = tickets[tickets['status'] == 'Resolved']
-    sla_compliant = resolved_tickets[
-        (resolved_tickets['resolution_date'] - resolved_tickets['ticket_date']).dt.total_seconds() / 3600 <= resolved_tickets['sla_target_hours']
-    ]
-    kpis['sla_compliance'] = (len(sla_compliant) / len(resolved_tickets) * 100) if len(resolved_tickets) > 0 else 0
+    resolved_tickets = tickets[tickets['status'] == 'Resolved'].copy()
+    
+    if len(resolved_tickets) > 0:
+        # Calculate resolution time in hours
+        resolved_tickets['resolution_hours'] = (
+            (pd.to_datetime(resolved_tickets['resolution_date'], errors='coerce') - 
+             pd.to_datetime(resolved_tickets['ticket_date'])).dt.total_seconds() / 3600
+        )
+        
+        sla_compliant = resolved_tickets[
+            resolved_tickets['resolution_hours'] <= resolved_tickets['sla_target_hours']
+        ]
+        kpis['sla_compliance'] = (len(sla_compliant) / len(resolved_tickets) * 100)
+    else:
+        kpis['sla_compliance'] = 0
     
     # KPI 10: Average Resolution Time
-    resolved_tickets['resolution_hours'] = (
-        (resolved_tickets['resolution_date'] - resolved_tickets['ticket_date']).dt.total_seconds() / 3600
-    )
-    kpis['avg_resolution_time'] = resolved_tickets['resolution_hours'].mean()
+    if len(resolved_tickets) > 0:
+        kpis['avg_resolution_time'] = resolved_tickets['resolution_hours'].mean()
+    else:
+        kpis['avg_resolution_time'] = 0
     
     # KPI 11: Ticket Backlog
     open_tickets = tickets[tickets['status'].isin(['Open', 'In Progress', 'Escalated'])]
@@ -139,18 +149,20 @@ def calculate_manager_kpis(tickets):
 # Load data
 subscribers, bills, tickets, usage = load_data()
 
-# Prepare data
-subscribers['signup_date'] = pd.to_datetime(subscribers['signup_date'])
-bills['billing_date'] = pd.to_datetime(bills['billing_date'])
+# ===== PREPARE DATA - USE ACTUAL COLUMN NAMES =====
+# Convert dates using actual column names from your CSVs
+subscribers['activation_date'] = pd.to_datetime(subscribers['activation_date'])
+bills['billing_month'] = pd.to_datetime(bills['billing_month'])
 tickets['ticket_date'] = pd.to_datetime(tickets['ticket_date'])
-tickets['resolution_date'] = pd.to_datetime(tickets['resolution_date'])
+tickets['resolution_date'] = pd.to_datetime(tickets['resolution_date'], errors='coerce')
+usage['usage_date'] = pd.to_datetime(usage['usage_date'])
 
-# Add service tier
+# Add service tier using actual column names
 subscribers['service_tier'] = subscribers.apply(
     lambda x: calculate_service_tier(
         x['plan_type'], 
         x['plan_name'], 
-        (datetime.now() - x['signup_date']).days // 30
+        (datetime.now() - x['activation_date']).days // 30
     ), axis=1
 )
 
@@ -159,7 +171,7 @@ st.sidebar.markdown("## 🎯 Filters")
 
 date_range = st.sidebar.date_input(
     "Date Range",
-    value=(bills['billing_date'].min().date(), bills['billing_date'].max().date()),
+    value=(bills['billing_month'].min().date(), bills['billing_month'].max().date()),
     key="date_range"
 )
 
@@ -189,8 +201,8 @@ ticket_categories = st.sidebar.multiselect(
 
 subscriber_status = st.sidebar.multiselect(
     "Subscriber Status",
-    options=subscribers['subscriber_status'].unique(),
-    default=subscribers['subscriber_status'].unique()
+    options=subscribers['status'].unique(),
+    default=subscribers['status'].unique()
 )
 
 # View toggle
@@ -206,13 +218,13 @@ filtered_subscribers = subscribers[
     (subscribers['city'].isin(cities)) &
     (subscribers['plan_type'].isin(plan_types)) &
     (subscribers['plan_name'].isin(plan_names)) &
-    (subscribers['subscriber_status'].isin(subscriber_status))
+    (subscribers['status'].isin(subscriber_status))
 ]
 
 filtered_bills = bills[
     (bills['subscriber_id'].isin(filtered_subscribers['subscriber_id'])) &
-    (bills['billing_date'].dt.date >= date_range[0]) &
-    (bills['billing_date'].dt.date <= date_range[1])
+    (bills['billing_month'].dt.date >= date_range[0]) &
+    (bills['billing_month'].dt.date <= date_range[1])
 ]
 
 filtered_tickets = tickets[
@@ -229,35 +241,42 @@ if view_type == "Executive View":
     # Calculate KPIs
     exec_kpis = calculate_executive_kpis(filtered_subscribers, filtered_bills, filtered_tickets)
     
-    # KPI Cards
-    col1, col2, col3, col4 = st.columns(4)
+    # KPI Cards Row 1
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
             "Total Revenue",
             f"AED {exec_kpis['total_revenue']:,.0f}",
-            delta=f"{(exec_kpis['total_revenue']/bills['bill_amount'].sum()*100):.1f}% of period"
+            delta=f"{(exec_kpis['total_revenue']/1e6):.2f}M"
         )
     
     with col2:
         st.metric(
             "ARPU",
             f"AED {exec_kpis['arpu']:,.0f}",
-            delta="Avg per subscriber"
+            delta="Per Subscriber"
         )
     
     with col3:
         st.metric(
             "Retention Ratio",
             f"{exec_kpis['retention_ratio']:.1f}%",
-            delta="Active subscribers"
+            delta="Active Subs"
         )
     
     with col4:
         st.metric(
             "Overdue Revenue",
             f"AED {exec_kpis['overdue_revenue']:,.0f}",
-            delta="At risk"
+            delta="At Risk"
+        )
+    
+    with col5:
+        st.metric(
+            "Credit Adjustments",
+            f"AED {exec_kpis['credit_adjustments']:,.0f}",
+            delta="Total Issued"
         )
     
     # Charts Row 1
@@ -265,48 +284,40 @@ if view_type == "Executive View":
     col1, col2 = st.columns(2)
     
     with col1:
-        # Monthly ARPU Trend
-        monthly_revenue = filtered_bills.groupby(filtered_bills['billing_date'].dt.to_period('M'))['bill_amount'].sum()
-        monthly_active = filtered_subscribers.groupby(
-            filtered_bills[filtered_bills['subscriber_id'].isin(filtered_subscribers['subscriber_id'])]['billing_date'].dt.to_period('M')
-        ).size()
-        monthly_arpu = monthly_revenue / monthly_active
+        # Revenue Trend
+        revenue_trend = filtered_bills.groupby(filtered_bills['billing_month'].dt.date)['bill_amount'].sum()
         
-        fig_arpu = go.Figure()
-        fig_arpu.add_trace(go.Scatter(
-            x=monthly_arpu.index.astype(str),
-            y=monthly_arpu.values,
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=revenue_trend.index,
+            y=revenue_trend.values,
             mode='lines+markers',
             line=dict(color='#667eea', width=3),
             fill='tozeroy',
             fillcolor='rgba(102, 126, 234, 0.2)'
         ))
-        fig_arpu.update_layout(
-            title="Monthly ARPU Trend",
-            xaxis_title="Month",
-            yaxis_title="ARPU (AED)",
+        fig.update_layout(
+            title="Monthly Revenue Trend",
+            xaxis_title="Date",
+            yaxis_title="Revenue (AED)",
             hovermode='x unified'
         )
-        st.plotly_chart(fig_arpu, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # Revenue by Plan Type
+        # Plan Mix
         plan_revenue = filtered_bills.merge(
             filtered_subscribers[['subscriber_id', 'plan_type']], 
             on='subscriber_id'
-        ).groupby(['billing_date', 'plan_type'])['bill_amount'].sum().reset_index()
-        plan_revenue['billing_date'] = plan_revenue['billing_date'].dt.to_period('M').astype(str)
+        ).groupby('plan_type')['bill_amount'].sum()
         
-        fig_plan = px.bar(
-            plan_revenue,
-            x='billing_date',
-            y='bill_amount',
-            color='plan_type',
+        fig = px.pie(
+            values=plan_revenue.values,
+            names=plan_revenue.index,
             title="Revenue by Plan Type",
-            labels={'bill_amount': 'Revenue (AED)', 'billing_date': 'Month'},
-            barmode='stack'
+            color_discrete_sequence=['#667eea', '#764ba2']
         )
-        st.plotly_chart(fig_plan, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     # Charts Row 2
     col1, col2 = st.columns(2)
@@ -316,54 +327,86 @@ if view_type == "Executive View":
         city_revenue = filtered_bills.merge(
             filtered_subscribers[['subscriber_id', 'city']], 
             on='subscriber_id'
-        ).groupby('city')['bill_amount'].sum().sort_values(ascending=True)
+        ).groupby('city')['bill_amount'].sum().sort_values(ascending=False)
         
-        fig_city = px.barh(
-            x=city_revenue.values,
-            y=city_revenue.index,
+        fig = px.bar(
+            x=city_revenue.index,
+            y=city_revenue.values,
             title="Revenue by City",
-            labels={'x': 'Revenue (AED)', 'y': 'City'},
+            labels={'y': 'Revenue (AED)', 'x': 'City'},
             color=city_revenue.values,
             color_continuous_scale='Blues'
         )
-        st.plotly_chart(fig_city, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # Payment Status Distribution
-        payment_dist = filtered_bills['payment_status'].value_counts()
+        # Subscriber Status
+        status_counts = filtered_subscribers['status'].value_counts()
         
-        fig_payment = px.pie(
-            values=payment_dist.values,
-            names=payment_dist.index,
-            title="Payment Status Distribution",
-            color_discrete_sequence=['#2ecc71', '#e74c3c', '#f39c12', '#95a5a6']
+        fig = px.pie(
+            values=status_counts.values,
+            names=status_counts.index,
+            title="Subscriber Status Distribution",
+            color_discrete_map={'Active': '#2ecc71', 'Suspended': '#e74c3c', 'Churned': '#95a5a6'}
         )
-        st.plotly_chart(fig_payment, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
-    # Insights Box
+    # Payment Status
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        payment_status = filtered_bills['payment_status'].value_counts()
+        
+        fig = px.bar(
+            x=payment_status.index,
+            y=payment_status.values,
+            title="Bill Payment Status Distribution",
+            labels={'y': 'Count', 'x': 'Status'},
+            color=payment_status.index,
+            color_discrete_map={'Paid': '#2ecc71', 'Overdue': '#e74c3c', 'Partial': '#f39c12', 'Pending': '#3498db'}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Top Plans by Revenue
+        plan_revenue = filtered_bills.merge(
+            filtered_subscribers[['subscriber_id', 'plan_name']], 
+            on='subscriber_id'
+        ).groupby('plan_name')['bill_amount'].sum().sort_values(ascending=False)
+        
+        fig = px.bar(
+            x=plan_revenue.values,
+            y=plan_revenue.index,
+            orientation='h',
+            title="Top Plans by Revenue",
+            labels={'x': 'Revenue (AED)', 'y': 'Plan Name'},
+            color=plan_revenue.values,
+            color_continuous_scale='Greens'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Insights
     st.markdown("---")
     st.markdown("### 💡 Executive Insights")
     
-    highest_city = filtered_bills.merge(
+    top_city = filtered_bills.merge(
         filtered_subscribers[['subscriber_id', 'city']], 
         on='subscriber_id'
-    ).groupby('city')['bill_amount'].sum().idxmax()
-    highest_city_revenue = filtered_bills.merge(
-        filtered_subscribers[['subscriber_id', 'city']], 
-        on='subscriber_id'
-    ).groupby('city')['bill_amount'].sum().max()
+    ).groupby('city')['bill_amount'].sum().idxmax() if len(filtered_bills) > 0 else 'N/A'
     
-    insights = f"""
+    insights_exec = f"""
     <div class="insight-box">
     <b>📊 Key Findings:</b><br>
-    • ARPU stands at <b>AED {exec_kpis['arpu']:,.0f}</b>, with <b>{exec_kpis['postpaid_pct']:.1f}%</b> from Postpaid plans<br>
-    • Retention ratio is <b>{exec_kpis['retention_ratio']:.1f}%</b> with strong base of active subscribers<br>
-    • <b>AED {exec_kpis['overdue_revenue']:,.0f}</b> at risk from overdue accounts (highest in {highest_city})<br>
-    • Total revenue: <b>AED {exec_kpis['total_revenue']:,.0f}</b> | Credits issued: <b>AED {exec_kpis['credit_adjustments']:,.0f}</b><br>
-    <b>⚠️ Recommendation:</b> Focus collection efforts on {highest_city} region to reduce overdue revenue
+    • Total Revenue: <b>AED {exec_kpis['total_revenue']:,.0f}</b><br>
+    • ARPU: <b>AED {exec_kpis['arpu']:,.0f}</b><br>
+    • Retention Ratio: <b>{exec_kpis['retention_ratio']:.1f}%</b><br>
+    • Overdue Revenue: <b>AED {exec_kpis['overdue_revenue']:,.0f}</b> ({(exec_kpis['overdue_revenue']/exec_kpis['total_revenue']*100):.1f}% of total)<br>
+    • Top Performing City: <b>{top_city}</b><br>
+    <b>⚠️ Recommendation:</b> Focus on improving collection from overdue accounts and maintaining retention rates.
     </div>
     """
-    st.markdown(insights, unsafe_allow_html=True)
+    st.markdown(insights_exec, unsafe_allow_html=True)
 
 # ==================== MANAGER VIEW ====================
 else:
@@ -412,8 +455,8 @@ else:
         # Daily Ticket Volume
         daily_tickets = filtered_tickets.groupby(filtered_tickets['ticket_date'].dt.date).size()
         
-        fig_volume = go.Figure()
-        fig_volume.add_trace(go.Scatter(
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
             x=daily_tickets.index,
             y=daily_tickets.values,
             mode='lines+markers',
@@ -421,167 +464,127 @@ else:
             fill='tozeroy',
             fillcolor='rgba(231, 76, 60, 0.2)'
         ))
-        fig_volume.update_layout(
+        fig.update_layout(
             title="Daily Ticket Volume Trend",
             xaxis_title="Date",
             yaxis_title="Ticket Count",
             hovermode='x unified'
         )
-        st.plotly_chart(fig_volume, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # SLA Compliance by Channel
-        resolved = filtered_tickets[filtered_tickets['status'] == 'Resolved'].copy()
-        resolved['resolution_hours'] = (
-            (resolved['resolution_date'] - resolved['ticket_date']).dt.total_seconds() / 3600
-        )
-        resolved['sla_compliant'] = resolved['resolution_hours'] <= resolved['sla_target_hours']
+        # Ticket Category Distribution
+        category_counts = filtered_tickets['ticket_category'].value_counts().head(10)
         
-        channel_sla = resolved.groupby('ticket_channel')['sla_compliant'].apply(
-            lambda x: (x.sum() / len(x) * 100) if len(x) > 0 else 0
-        ).sort_values(ascending=False)
-        
-        fig_sla = px.bar(
-            x=channel_sla.values,
-            y=channel_sla.index,
-            title="SLA Compliance by Channel",
-            labels={'x': 'Compliance Rate (%)', 'y': 'Channel'},
-            color=channel_sla.values,
-            color_continuous_scale='RdYlGn',
-            orientation='h'
+        fig = px.bar(
+            x=category_counts.values,
+            y=category_counts.index,
+            orientation='h',
+            title="Top 10 Ticket Categories",
+            labels={'x': 'Count', 'y': 'Category'},
+            color=category_counts.values,
+            color_continuous_scale='Viridis'
         )
-        st.plotly_chart(fig_sla, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     # Charts Row 2
     col1, col2 = st.columns(2)
     
     with col1:
-        # Ticket Category Distribution
-        category_counts = filtered_tickets['ticket_category'].value_counts().head(10)
+        # Ticket Status Distribution
+        status_counts = filtered_tickets['status'].value_counts()
         
-        fig_category = px.bar(
-            x=category_counts.values,
-            y=category_counts.index,
-            title="Top 10 Ticket Categories",
-            labels={'x': 'Count', 'y': 'Category'},
-            color=category_counts.values,
-            color_continuous_scale='Viridis',
-            orientation='h'
+        fig = px.pie(
+            values=status_counts.values,
+            names=status_counts.index,
+            title="Ticket Status Distribution",
+            color_discrete_map={'Resolved': '#2ecc71', 'Open': '#e74c3c', 'In Progress': '#f39c12', 'Escalated': '#95a5a6'}
         )
-        st.plotly_chart(fig_category, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # Resolution Time by Team
-        resolved_team = filtered_tickets[filtered_tickets['status'] == 'Resolved'].copy()
-        resolved_team['resolution_hours'] = (
-            (resolved_team['resolution_date'] - resolved_team['ticket_date']).dt.total_seconds() / 3600
-        )
+        # Tickets by Channel
+        channel_counts = filtered_tickets['ticket_channel'].value_counts()
         
-        team_resolution = resolved_team.groupby('assigned_team')['resolution_hours'].mean().sort_values()
-        
-        fig_team = px.bar(
-            x=team_resolution.values,
-            y=team_resolution.index,
-            title="Avg Resolution Time by Team",
-            labels={'x': 'Hours', 'y': 'Team'},
-            color=team_resolution.values,
-            color_continuous_scale='Reds_r',
-            orientation='h'
+        fig = px.bar(
+            x=channel_counts.index,
+            y=channel_counts.values,
+            title="Tickets by Channel",
+            labels={'y': 'Count', 'x': 'Channel'},
+            color=channel_counts.values,
+            color_continuous_scale='Blues'
         )
-        st.plotly_chart(fig_team, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
-    # Top Problem Zones Table
+    # Team Analysis
     st.markdown("---")
-    st.subheader("🔥 Top 10 Problem Zones Analysis")
+    st.subheader("👥 Team Performance Analysis")
     
-    zone_analysis = filtered_tickets.groupby('assigned_team').agg({
-        'ticket_id': 'count',
-        'status': lambda x: (x.isin(['Open', 'In Progress', 'Escalated'])).sum()
-    }).rename(columns={'ticket_id': 'Total Tickets', 'status': 'Open Tickets'})
-    
-    resolved_data = filtered_tickets[filtered_tickets['status'] == 'Resolved'].copy()
-    resolved_data['resolution_hours'] = (
-        (resolved_data['resolution_date'] - resolved_data['ticket_date']).dt.total_seconds() / 3600
-    )
-    
-    zone_analysis['Avg Resolution Hours'] = resolved_data.groupby('assigned_team')['resolution_hours'].mean()
-    zone_analysis['SLA Breaches'] = resolved_data.groupby('assigned_team').apply(
-        lambda x: (x['resolution_hours'] > x['sla_target_hours']).sum()
-    )
-    
-    zone_analysis = zone_analysis.sort_values('Total Tickets', ascending=False).head(10)
-    
-    # Make table interactive
-    st.dataframe(
-        zone_analysis.reset_index().rename(columns={'assigned_team': 'Zone/Team'}),
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Service Tier Analysis
-    st.markdown("---")
-    st.subheader("📊 Ticket Distribution by Service Tier")
-    
-    tier_analysis = filtered_tickets.merge(
-        filtered_subscribers[['subscriber_id', 'service_tier']], 
-        left_on='subscriber_id', 
-        right_on='subscriber_id',
-        how='left'
-    ).groupby('service_tier').agg({
+    team_analysis = filtered_tickets.groupby('assigned_team').agg({
         'ticket_id': 'count',
         'status': lambda x: (x == 'Resolved').sum()
     }).rename(columns={'ticket_id': 'Total Tickets', 'status': 'Resolved Tickets'})
     
-    tier_analysis['SLA Compliance %'] = (tier_analysis['Resolved Tickets'] / tier_analysis['Total Tickets'] * 100).round(1)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig_tier = px.bar(
-            x=tier_analysis.index,
-            y=tier_analysis['Total Tickets'],
-            title="Ticket Backlog by Service Tier",
-            labels={'y': 'Tickets', 'x': 'Service Tier'},
-            color=tier_analysis['Total Tickets'],
-            color_continuous_scale='Blues'
-        )
-        st.plotly_chart(fig_tier, use_container_width=True)
-    
-    with col2:
-        fig_tier_sla = px.bar(
-            x=tier_analysis.index,
-            y=tier_analysis['SLA Compliance %'],
-            title="SLA Compliance by Service Tier",
-            labels={'y': 'Compliance %', 'x': 'Service Tier'},
-            color=tier_analysis['SLA Compliance %'],
-            color_continuous_scale='RdYlGn',
-            range_y=[0, 100]
-        )
-        st.plotly_chart(fig_tier_sla, use_container_width=True)
+    team_analysis['Efficiency %'] = (team_analysis['Resolved Tickets'] / team_analysis['Total Tickets'] * 100).round(1)
     
     st.dataframe(
-        tier_analysis.reset_index().rename(columns={'service_tier': 'Tier'}),
+        team_analysis.reset_index().rename(columns={'assigned_team': 'Team'}),
         use_container_width=True,
         hide_index=True
     )
+    
+    # Priority Distribution
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        priority_counts = filtered_tickets['priority'].value_counts()
+        
+        fig = px.pie(
+            values=priority_counts.values,
+            names=priority_counts.index,
+            title="Ticket Priority Distribution",
+            color_discrete_sequence=['#2ecc71', '#f39c12', '#e74c3c', '#c0392b']
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Resolution Time by Channel
+        resolved = filtered_tickets[filtered_tickets['status'] == 'Resolved'].copy()
+        resolved['resolution_hours'] = (
+            (pd.to_datetime(resolved['resolution_date'], errors='coerce') - 
+             pd.to_datetime(resolved['ticket_date'])).dt.total_seconds() / 3600
+        )
+        
+        if len(resolved) > 0:
+            channel_resolution = resolved.groupby('ticket_channel')['resolution_hours'].mean().sort_values()
+            
+            fig = px.bar(
+                x=channel_resolution.values,
+                y=channel_resolution.index,
+                orientation='h',
+                title="Avg Resolution Time by Channel",
+                labels={'x': 'Hours', 'y': 'Channel'},
+                color=channel_resolution.values,
+                color_continuous_scale='Reds_r'
+            )
+            st.plotly_chart(fig, use_container_width=True)
     
     # Insights Box
     st.markdown("---")
     st.markdown("### 💡 Operational Insights")
     
-    worst_channel = channel_sla.idxmin()
-    worst_team = team_resolution.idxmax()
     network_pct = (len(filtered_tickets[filtered_tickets['ticket_category'] == 'Network Issue']) / len(filtered_tickets) * 100) if len(filtered_tickets) > 0 else 0
     
     insights_ops = f"""
     <div class="insight-box">
     <b>⚙️ Key Findings:</b><br>
     • SLA Compliance: <b>{ops_kpis['sla_compliance']:.1f}%</b> of tickets resolved on time<br>
-    • Ticket Backlog: <b>{ops_kpis['ticket_backlog']:,}</b> unresolved tickets requiring attention<br>
-    • Avg Resolution Time: <b>{ops_kpis['avg_resolution_time']:.1f} hours</b> across all teams<br>
-    • Escalation Rate: <b>{ops_kpis['escalation_rate']:.1f}%</b> of tickets escalated<br>
-    • Network Issues: <b>{network_pct:.1f}%</b> of all tickets (highest impact category)<br>
-    <b>⚠️ Recommendation:</b> {worst_channel} channel has lowest SLA compliance. {worst_team} team shows highest resolution time - consider resource reallocation.
+    • Ticket Backlog: <b>{ops_kpis['ticket_backlog']:,}</b> unresolved tickets<br>
+    • Avg Resolution Time: <b>{ops_kpis['avg_resolution_time']:.1f} hours</b><br>
+    • Escalation Rate: <b>{ops_kpis['escalation_rate']:.1f}%</b><br>
+    • Network Issues: <b>{network_pct:.1f}%</b> of all tickets<br>
+    <b>⚠️ Recommendation:</b> Focus on network issues and improve team efficiency to meet SLA targets.
     </div>
     """
     st.markdown(insights_ops, unsafe_allow_html=True)
